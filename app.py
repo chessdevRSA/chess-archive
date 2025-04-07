@@ -13,6 +13,7 @@ from utils.data_processor import process_pgn_data, validate_player_data
 from utils.file_manager import save_pgn_files, create_storage_structure, get_archive_stats
 from utils.scheduler import schedule_scraping_tasks, get_scheduled_tasks
 from utils.visualizers import display_collection_stats
+from utils.db_manager import DatabaseManager
 
 # Set page configuration
 st.set_page_config(
@@ -31,103 +32,114 @@ if 'scraping_progress' not in st.session_state:
 if 'scheduler' not in st.session_state:
     st.session_state.scheduler = BackgroundScheduler()
     st.session_state.scheduler.start()
-if 'scheduled_tasks' not in st.session_state:
-    st.session_state.scheduled_tasks = []
-if 'archive_stats' not in st.session_state:
-    st.session_state.archive_stats = None
-if 'error_log' not in st.session_state:
-    st.session_state.error_log = []
+if 'job_ids' not in st.session_state:
+    st.session_state.job_ids = []
+if 'db_manager' not in st.session_state:
+    st.session_state.db_manager = DatabaseManager()
+    # Initialize database and storage structure
+    create_storage_structure()
 
-# Create base storage directories if they don't exist
-data_dir = "data"
-if not os.path.exists(data_dir):
-    os.makedirs(data_dir)
-    os.makedirs(os.path.join(data_dir, "players"))
-    os.makedirs(os.path.join(data_dir, "logs"))
-
-# Title and description
+# Main title and description
 st.title("Chess Game Archiver")
-st.markdown(
-    "A tool for scraping and archiving chess games from Chess.com and Lichess based on FIDE player information."
-)
+st.markdown("""
+This application collects and archives chess games from online platforms 
+like Chess.com and Lichess based on player information.
+""")
 
-# Main navigation
+# Create tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "Player Database", "Game Collection", "Scheduling", 
-    "Archive Statistics", "Settings"
+    "Player Database", 
+    "Game Collection",
+    "Scheduling",
+    "Archive Statistics",
+    "Settings"
 ])
 
-# Tab 1: Player Database Management
+# Player Database tab
 with tab1:
-    st.header("Player Database Management")
+    st.header("Player Database")
     
-    st.subheader("Import FIDE Player Data")
-    uploaded_file = st.file_uploader(
-        "Upload CSV or Excel file with FIDE player data", 
-        type=["csv", "xlsx"]
-    )
+    # Initialize player data from database
+    if st.session_state.player_data is None:
+        # Try to load from database
+        db_player_data = st.session_state.db_manager.get_player_data()
+        if not db_player_data.empty:
+            st.session_state.player_data = db_player_data
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### Required Columns")
-        st.info("""
-        - `fide_id`: FIDE ID number
-        - `name`: Player's full name
-        - `chesscom_username`: Chess.com username (optional)
-        - `lichess_username`: Lichess username (optional)
-        """)
+    # File upload section
+    st.subheader("Import Players")
     
-    with col2:
-        st.markdown("### Sample Format")
-        sample_data = {
-            "fide_id": ["12345678", "87654321"],
-            "name": ["Magnus Carlsen", "Hikaru Nakamura"],
-            "chesscom_username": ["MagnusCarlsen", "Hikaru"],
-            "lichess_username": ["DrNykterstein", "Hikaru"]
-        }
-        st.dataframe(pd.DataFrame(sample_data))
+    uploaded_file = st.file_uploader("Upload player data CSV file", type="csv")
     
     if uploaded_file is not None:
         try:
-            # Determine file type and read accordingly
-            if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
-            else:
-                df = pd.read_excel(uploaded_file)
+            df = pd.read_csv(uploaded_file)
+            is_valid, message = validate_player_data(df)
             
-            # Validate data
-            validation_result, validation_message = validate_player_data(df)
-            
-            if validation_result:
-                st.session_state.player_data = df
-                st.success(f"Successfully imported {len(df)} player records!")
+            if is_valid:
+                # Import to database
+                success = st.session_state.db_manager.import_player_data(df)
+                
+                if success:
+                    st.success(f"Successfully imported {len(df)} players.")
+                    # Update session state with latest player data
+                    st.session_state.player_data = st.session_state.db_manager.get_player_data()
+                else:
+                    st.error("Error importing player data to database.")
             else:
-                st.error(validation_message)
+                st.error(message)
         except Exception as e:
-            st.error(f"Error importing file: {str(e)}")
+            st.error(f"Error reading CSV file: {str(e)}")
+    
+    # Display player data
+    st.subheader("Player List")
     
     if st.session_state.player_data is not None:
-        st.subheader("Player Database Preview")
-        st.dataframe(st.session_state.player_data)
+        # Display data with edit capability
+        edited_df = st.data_editor(
+            st.session_state.player_data,
+            hide_index=True,
+            num_rows="dynamic",
+            key="player_editor"
+        )
         
-        st.subheader("Database Statistics")
-        col1, col2, col3 = st.columns(3)
+        # Save button for edited data
+        if st.button("Save Changes"):
+            # Update database with edited data
+            success = st.session_state.db_manager.import_player_data(edited_df)
+            
+            if success:
+                st.success("Changes saved successfully.")
+                # Update session state with latest player data
+                st.session_state.player_data = st.session_state.db_manager.get_player_data()
+            else:
+                st.error("Error saving changes.")
+    else:
+        st.info("No player data available. Please import a CSV file.")
         
-        with col1:
-            total_players = len(st.session_state.player_data)
-            st.metric("Total Players", total_players)
-        
-        with col2:
-            chesscom_count = st.session_state.player_data['chesscom_username'].count()
-            st.metric("Chess.com Usernames", 
-                     f"{chesscom_count} ({round(chesscom_count/total_players*100)}%)")
-        
-        with col3:
-            lichess_count = st.session_state.player_data['lichess_username'].count()
-            st.metric("Lichess Usernames", 
-                     f"{lichess_count} ({round(lichess_count/total_players*100)}%)")
+        # Show template format button
+        if st.button("Download Template CSV"):
+            template_df = pd.DataFrame({
+                'fide_id': ['12345678', '87654321'],
+                'name': ['Magnus Carlsen', 'Hikaru Nakamura'],
+                'rating': [2850, 2750],
+                'title': ['GM', 'GM'],
+                'federation': ['NOR', 'USA'],
+                'birth_year': [1990, 1987],
+                'chesscom_username': ['MagnusCarlsen', 'Hikaru'],
+                'lichess_username': ['DrNykterstein', 'Hikaru']
+            })
+            
+            # Convert DataFrame to CSV and create a download link
+            csv = template_df.to_csv(index=False)
+            st.download_button(
+                label="Download Template CSV",
+                data=csv,
+                file_name="chess_players_template.csv",
+                mime="text/csv",
+            )
 
-# Tab 2: Game Collection
+# Game Collection tab
 with tab2:
     st.header("Chess Game Collection")
     
@@ -151,6 +163,35 @@ with tab2:
                 []
             )
             
+            # Time controls section
+            st.subheader("Time Controls")
+            
+            # Global time controls (for all players)
+            time_control_mode = st.radio(
+                "Time Control Selection Mode",
+                ["All Time Controls", "Select Specific Time Controls", "Per Player"],
+                index=0
+            )
+            
+            global_time_controls = []
+            per_player_time_controls = {}
+            
+            if time_control_mode == "Select Specific Time Controls":
+                global_time_controls = st.multiselect(
+                    "Select time controls for all players",
+                    ["bullet", "blitz", "rapid", "classical", "correspondence", "other"],
+                    []
+                )
+            elif time_control_mode == "Per Player":
+                st.info("Configure time controls for each selected player below:")
+                
+                for player in selected_players:
+                    per_player_time_controls[player] = st.multiselect(
+                        f"Time controls for {player}",
+                        ["bullet", "blitz", "rapid", "classical", "correspondence", "other"],
+                        []
+                    )
+            
         with col2:
             time_period = st.radio(
                 "Time period",
@@ -158,11 +199,13 @@ with tab2:
                 index=0
             )
             
+            # Changed to 0 to represent unlimited as per requirements
             max_games = st.number_input(
                 "Maximum games per player (0 for unlimited)",
                 min_value=0,
-                max_value=10000,
-                value=100
+                max_value=100000,
+                value=0,
+                help="Set to 0 to download all available games"
             )
         
         if st.button("Start Collection", disabled=st.session_state.scraping_running):
@@ -186,6 +229,14 @@ with tab2:
                     chesscom_username = player_data.get('chesscom_username')
                     lichess_username = player_data.get('lichess_username')
                     
+                    # Get time controls for this player
+                    if time_control_mode == "All Time Controls":
+                        player_time_controls = None
+                    elif time_control_mode == "Select Specific Time Controls":
+                        player_time_controls = global_time_controls
+                    else:  # Per Player
+                        player_time_controls = per_player_time_controls.get(player, [])
+                    
                     # Update progress
                     st.session_state.scraping_progress[player]["status"] = "in_progress"
                     
@@ -196,252 +247,342 @@ with tab2:
                             games = chess_com_client.get_player_games(
                                 chesscom_username, 
                                 time_period,
-                                max_games
+                                max_games,
+                                player_time_controls
                             )
                             
                             # Process and save games
+                            is_active = len(games) > 0
+                            
                             if games:
                                 processed_games = process_pgn_data(games, 'chess.com', player, fide_id)
-                                save_pgn_files(processed_games, 'chess.com', player, fide_id)
-                                st.session_state.scraping_progress[player]["chess_com_games"] = len(games)
+                                save_pgn_files(processed_games, 'chess.com', player, fide_id, is_active)
+                                st.session_state.scraping_progress[player]["chess_com_games"] = len(processed_games)
+                            else:
+                                # Handle inactive account
+                                save_pgn_files([], 'chess.com', player, fide_id, is_active)
+                                st.session_state.scraping_progress[player]["chess_com_games"] = 0
+                            
+                            # Log collection
+                            st.session_state.db_manager.log_collection(
+                                fide_id,
+                                'chess.com',
+                                time_period,
+                                len(games) if games else 0,
+                                player_time_controls,
+                                "success" if is_active else "inactive"
+                            )
+                            
                         except Exception as e:
-                            error_msg = f"Error collecting Chess.com games for {player}: {str(e)}"
-                            st.session_state.error_log.append({
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "player": player,
-                                "platform": "Chess.com",
-                                "error": str(e)
-                            })
+                            st.session_state.scraping_progress[player]["chess_com_error"] = str(e)
+                            
+                            # Log error
+                            st.session_state.db_manager.log_collection(
+                                fide_id,
+                                'chess.com',
+                                time_period,
+                                0,
+                                player_time_controls,
+                                "error",
+                                str(e)
+                            )
                     
                     if "Lichess" in platforms and not pd.isna(lichess_username):
                         try:
                             lichess_client = LichessClient()
                             games = lichess_client.get_player_games(
-                                lichess_username,
+                                lichess_username, 
                                 time_period,
-                                max_games
+                                max_games,
+                                player_time_controls
                             )
                             
                             # Process and save games
+                            is_active = len(games) > 0
+                            
                             if games:
                                 processed_games = process_pgn_data(games, 'lichess', player, fide_id)
-                                save_pgn_files(processed_games, 'lichess', player, fide_id)
-                                st.session_state.scraping_progress[player]["lichess_games"] = len(games)
+                                save_pgn_files(processed_games, 'lichess', player, fide_id, is_active)
+                                st.session_state.scraping_progress[player]["lichess_games"] = len(processed_games)
+                            else:
+                                # Handle inactive account
+                                save_pgn_files([], 'lichess', player, fide_id, is_active)
+                                st.session_state.scraping_progress[player]["lichess_games"] = 0
+                            
+                            # Log collection
+                            st.session_state.db_manager.log_collection(
+                                fide_id,
+                                'lichess',
+                                time_period,
+                                len(games) if games else 0,
+                                player_time_controls,
+                                "success" if is_active else "inactive"
+                            )
+                            
                         except Exception as e:
-                            error_msg = f"Error collecting Lichess games for {player}: {str(e)}"
-                            st.session_state.error_log.append({
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "player": player,
-                                "platform": "Lichess",
-                                "error": str(e)
-                            })
+                            st.session_state.scraping_progress[player]["lichess_error"] = str(e)
+                            
+                            # Log error
+                            st.session_state.db_manager.log_collection(
+                                fide_id,
+                                'lichess',
+                                time_period,
+                                0,
+                                player_time_controls,
+                                "error",
+                                str(e)
+                            )
                     
-                    # Update progress
                     st.session_state.scraping_progress[player]["status"] = "completed"
-                    st.session_state.scraping_progress[player]["progress"] = 100
                 
                 st.session_state.scraping_running = False
-                st.session_state.archive_stats = get_archive_stats()
-                st.rerun()
         
-        # Show progress
-        if st.session_state.scraping_running:
+        # Display scraping progress
+        if st.session_state.scraping_progress:
             st.subheader("Collection Progress")
-            for player, progress in st.session_state.scraping_progress.items():
-                if progress["status"] != "pending":
-                    st.progress(progress["progress"])
-                    st.text(f"{player}: {progress['status']}")
-        
-        # Show collection results if available
-        if any(prog["status"] == "completed" for player, prog in st.session_state.scraping_progress.items()):
-            st.subheader("Collection Results")
-            results = []
             
             for player, progress in st.session_state.scraping_progress.items():
-                if progress["status"] == "completed":
-                    player_result = {
-                        "Player": player,
-                        "Chess.com Games": progress.get("chess_com_games", 0),
-                        "Lichess Games": progress.get("lichess_games", 0),
-                        "Total Games": progress.get("chess_com_games", 0) + progress.get("lichess_games", 0)
-                    }
-                    results.append(player_result)
-            
-            st.table(pd.DataFrame(results))
+                status = progress["status"]
+                
+                if status == "pending":
+                    st.info(f"{player}: Pending")
+                elif status == "in_progress":
+                    st.info(f"{player}: In progress...")
+                elif status == "completed":
+                    success_msg = f"{player}: Completed"
+                    
+                    if "chess_com_games" in progress:
+                        success_msg += f" - Chess.com: {progress['chess_com_games']} games"
+                    
+                    if "lichess_games" in progress:
+                        success_msg += f" - Lichess: {progress['lichess_games']} games"
+                    
+                    st.success(success_msg)
+                    
+                    # Display errors if any
+                    if "chess_com_error" in progress:
+                        st.error(f"Chess.com error: {progress['chess_com_error']}")
+                    
+                    if "lichess_error" in progress:
+                        st.error(f"Lichess error: {progress['lichess_error']}")
+                    
+        # Display inactive accounts
+        st.subheader("Inactive Accounts")
+        inactive_df = st.session_state.db_manager.get_inactive_accounts()
         
-        # Error log
-        if st.session_state.error_log:
-            with st.expander("View Error Log"):
-                st.table(pd.DataFrame(st.session_state.error_log))
+        if not inactive_df.empty:
+            st.write(f"The following {len(inactive_df)} accounts have been marked as inactive (no recent games found):")
+            st.dataframe(inactive_df)
+        else:
+            st.info("No inactive accounts detected.")
 
-# Tab 3: Scheduling
+# Scheduling tab
 with tab3:
-    st.header("Scheduled Collection")
+    st.header("Scheduled Collections")
     
     if st.session_state.player_data is None:
         st.warning("Please import player data first in the Player Database tab.")
     else:
-        st.subheader("Set Up Monthly Collection")
+        st.subheader("Schedule Monthly Collection")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            schedule_platforms = st.multiselect(
+            scheduled_players = st.multiselect(
+                "Select players for scheduled collection",
+                st.session_state.player_data['name'].tolist(),
+                []
+            )
+            
+            scheduled_platforms = st.multiselect(
                 "Platforms to collect from",
                 ["Chess.com", "Lichess"],
-                ["Chess.com", "Lichess"],
-                key="schedule_platforms"
+                ["Chess.com", "Lichess"]
             )
             
-            schedule_all_players = st.checkbox("Schedule for all players in database", value=False)
-            
-            if not schedule_all_players:
-                schedule_players = st.multiselect(
-                    "Select players to schedule collection for",
-                    st.session_state.player_data['name'].tolist(),
-                    []
-                )
-            else:
-                schedule_players = st.session_state.player_data['name'].tolist()
+            # Time controls for scheduled collections
+            scheduled_time_controls = st.multiselect(
+                "Time controls to collect",
+                ["bullet", "blitz", "rapid", "classical", "correspondence", "other"],
+                []
+            )
             
         with col2:
-            collection_day = st.number_input(
-                "Day of month to collect (1-28)",
-                min_value=1,
-                max_value=28,
-                value=1
+            day_of_month = st.slider(
+                "Day of month to run collection",
+                1, 28, 1
             )
             
-            collection_hour = st.number_input(
-                "Hour to collect (0-23)",
-                min_value=0,
-                max_value=23,
-                value=0
+            hour_of_day = st.slider(
+                "Hour of day to run collection (24h format)",
+                0, 23, 0
             )
             
-            max_games_monthly = st.number_input(
-                "Maximum games per player per month (0 for unlimited)",
+            scheduled_max_games = st.number_input(
+                "Maximum games per collection (0 for unlimited)",
                 min_value=0,
-                max_value=10000,
-                value=1000,
-                key="max_games_monthly"
+                max_value=100000,
+                value=0,
+                help="Set to 0 to download all available games"
             )
         
-        if st.button("Schedule Monthly Collection"):
-            if len(schedule_players) == 0:
+        if st.button("Schedule Collection"):
+            if len(scheduled_players) == 0:
                 st.error("Please select at least one player.")
             else:
-                # Schedule the scraping tasks
-                try:
-                    new_tasks = schedule_scraping_tasks(
-                        st.session_state.scheduler,
-                        schedule_players,
-                        st.session_state.player_data,
-                        schedule_platforms,
-                        collection_day,
-                        collection_hour,
-                        max_games_monthly
-                    )
-                    
-                    st.session_state.scheduled_tasks.extend(new_tasks)
-                    st.success(f"Successfully scheduled collection for {len(schedule_players)} players!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error scheduling collection: {str(e)}")
+                job_ids = schedule_scraping_tasks(
+                    st.session_state.scheduler,
+                    scheduled_players,
+                    st.session_state.player_data,
+                    scheduled_platforms,
+                    day_of_month,
+                    hour_of_day,
+                    scheduled_time_controls,
+                    scheduled_max_games
+                )
+                
+                st.session_state.job_ids.extend(job_ids)
+                st.success(f"Successfully scheduled collection for {len(job_ids)} players.")
         
         # Display scheduled tasks
         st.subheader("Scheduled Tasks")
         
-        if not st.session_state.scheduled_tasks:
-            st.info("No scheduled tasks. Set up a collection schedule above.")
-        else:
-            scheduled_tasks = get_scheduled_tasks(st.session_state.scheduler, st.session_state.scheduled_tasks)
-            scheduled_df = pd.DataFrame(scheduled_tasks)
+        scheduled_tasks_df = st.session_state.db_manager.get_scheduled_tasks()
+        
+        if not scheduled_tasks_df.empty:
+            # Convert JSON columns to readable format
+            scheduled_tasks_df['platforms_str'] = scheduled_tasks_df['platforms'].apply(lambda x: ', '.join(x))
             
-            if not scheduled_df.empty:
-                st.dataframe(scheduled_df)
+            # Format time controls for display
+            def format_time_controls(tc_list):
+                if tc_list and len(tc_list) > 0:
+                    return ', '.join(tc_list)
+                return "All"
                 
-                if st.button("Clear All Scheduled Tasks"):
-                    for job_id in st.session_state.scheduled_tasks:
-                        try:
-                            st.session_state.scheduler.remove_job(job_id)
-                        except:
-                            pass
-                    st.session_state.scheduled_tasks = []
-                    st.success("All scheduled tasks have been cleared.")
-                    st.rerun()
-            else:
-                st.info("No active scheduled tasks.")
+            scheduled_tasks_df['time_controls_str'] = scheduled_tasks_df['time_controls'].apply(format_time_controls)
+            
+            # Display columns of interest
+            display_df = scheduled_tasks_df[[
+                'player_name', 'fide_id', 'platforms_str', 'time_controls_str',
+                'day_of_month', 'hour', 'max_games', 'is_active'
+            ]].copy()
+            
+            display_df.columns = [
+                'Player', 'FIDE ID', 'Platforms', 'Time Controls',
+                'Day of Month', 'Hour', 'Max Games', 'Active'
+            ]
+            
+            st.dataframe(display_df)
+            
+            # Add delete buttons
+            if not scheduled_tasks_df.empty:
+                task_to_delete = st.selectbox(
+                    "Select a task to delete",
+                    scheduled_tasks_df['player_name'].tolist()
+                )
+                
+                if st.button("Delete Selected Task"):
+                    task_row = scheduled_tasks_df[scheduled_tasks_df['player_name'] == task_to_delete].iloc[0]
+                    job_id = task_row['job_id']
+                    
+                    # Remove from scheduler
+                    st.session_state.scheduler.remove_job(job_id)
+                    
+                    # Remove from database
+                    success = st.session_state.db_manager.delete_scheduled_task(job_id)
+                    
+                    if success:
+                        st.success(f"Successfully deleted scheduled task for {task_to_delete}.")
+                        # Remove from session state
+                        if job_id in st.session_state.job_ids:
+                            st.session_state.job_ids.remove(job_id)
+                    else:
+                        st.error(f"Error deleting scheduled task for {task_to_delete}.")
+        else:
+            st.info("No scheduled tasks available.")
 
-# Tab 4: Archive Statistics
+# Archive Statistics tab
 with tab4:
     st.header("Archive Statistics")
     
-    if st.button("Refresh Archive Statistics"):
-        st.session_state.archive_stats = get_archive_stats()
-        st.success("Archive statistics updated!")
+    # Get archive statistics
+    stats = get_archive_stats()
     
-    if st.session_state.archive_stats is None:
-        st.session_state.archive_stats = get_archive_stats()
-    
-    if st.session_state.archive_stats:
-        display_collection_stats(st.session_state.archive_stats)
+    # Display statistics
+    if stats:
+        display_collection_stats(stats)
+        
+        # Inactive Accounts
+        st.subheader("Inactive Account Details")
+        inactive_df = st.session_state.db_manager.get_inactive_accounts()
+        
+        if not inactive_df.empty:
+            st.dataframe(inactive_df)
+        else:
+            st.info("No inactive accounts detected.")
+            
+        # Collection History
+        st.subheader("Recent Collection History")
+        # Use the database collection logs
+        collection_stats = st.session_state.db_manager.get_collection_stats()
+        
+        if collection_stats and "recent_collections" in collection_stats:
+            recent_df = pd.DataFrame(collection_stats["recent_collections"])
+            if not recent_df.empty:
+                st.dataframe(recent_df)
+            else:
+                st.info("No collection history available.")
+        else:
+            st.info("No collection history available.")
     else:
-        st.info("No games have been collected yet. Use the Game Collection tab to start collecting games.")
+        st.info("No archived data available yet.")
 
-# Tab 5: Settings
+# Settings tab
 with tab5:
     st.header("Settings")
     
-    # API Rate Limiting Settings
-    st.subheader("API Rate Limiting")
+    st.subheader("Database Operations")
     
+    # Database backup and restore
     col1, col2 = st.columns(2)
     
     with col1:
-        chesscom_delay = st.number_input(
-            "Chess.com API delay between requests (seconds)",
-            min_value=0.5,
-            max_value=10.0,
-            value=1.0,
-            step=0.1
-        )
+        if st.button("Backup Database"):
+            try:
+                from shutil import copyfile
+                backup_path = "data/chess_archive_backup.db"
+                copyfile("data/chess_archive.db", backup_path)
+                st.success(f"Database backup created at {backup_path}")
+            except Exception as e:
+                st.error(f"Error creating database backup: {str(e)}")
     
     with col2:
-        lichess_delay = st.number_input(
-            "Lichess API delay between requests (seconds)",
-            min_value=0.5,
-            max_value=10.0, 
-            value=1.0,
-            step=0.1
-        )
+        if st.button("Restore Database from Backup"):
+            try:
+                backup_path = "data/chess_archive_backup.db"
+                if os.path.exists(backup_path):
+                    from shutil import copyfile
+                    copyfile(backup_path, "data/chess_archive.db")
+                    st.success("Database restored from backup.")
+                    # Reload player data
+                    st.session_state.player_data = st.session_state.db_manager.get_player_data()
+                else:
+                    st.error("Backup file not found.")
+            except Exception as e:
+                st.error(f"Error restoring database: {str(e)}")
     
-    if st.button("Save Settings"):
-        # Update settings in a mock configuration file
-        settings = {
-            "chesscom_delay": chesscom_delay,
-            "lichess_delay": lichess_delay
-        }
-        
-        try:
-            # In a real app, save to a config file
-            with open(os.path.join(data_dir, "settings.json"), "w") as f:
-                import json
-                json.dump(settings, f)
-            st.success("Settings saved successfully!")
-        except Exception as e:
-            st.error(f"Error saving settings: {str(e)}")
+    # Display app version and info
+    st.subheader("About")
+    st.markdown("""
+    **Chess Game Archiver** v1.0
     
-    # Error Log
-    st.subheader("Error Log")
+    A tool for archiving chess games from multiple platforms based on player FIDE information.
     
-    if st.session_state.error_log:
-        error_df = pd.DataFrame(st.session_state.error_log)
-        st.dataframe(error_df)
-        
-        if st.button("Clear Error Log"):
-            st.session_state.error_log = []
-            st.success("Error log cleared!")
-            st.rerun()
-    else:
-        st.info("No errors have been logged.")
+    Features:
+    - Import FIDE player data
+    - Collect games from Chess.com and Lichess
+    - Filter by time controls
+    - Track inactive accounts
+    - Schedule automatic monthly collections
+    - Maintain archive statistics
+    """)

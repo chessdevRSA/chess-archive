@@ -1,7 +1,8 @@
 import pandas as pd
+from typing import List, Dict, Any, Optional, Tuple
 import io
 import chess.pgn
-from typing import List, Dict, Tuple, Any, Optional, Union
+import datetime
 
 def validate_player_data(df: pd.DataFrame) -> Tuple[bool, str]:
     """
@@ -16,22 +17,20 @@ def validate_player_data(df: pd.DataFrame) -> Tuple[bool, str]:
     required_columns = ['fide_id', 'name']
     
     # Check for required columns
-    for col in required_columns:
-        if col not in df.columns:
-            return False, f"Missing required column: {col}"
+    missing_columns = [col for col in required_columns if col not in df.columns]
     
-    # Check for at least one username column
-    if 'chesscom_username' not in df.columns and 'lichess_username' not in df.columns:
-        return False, "DataFrame must contain at least one of 'chesscom_username' or 'lichess_username'"
+    if missing_columns:
+        return False, f"Missing required columns: {', '.join(missing_columns)}"
     
-    # Check for duplicate FIDE IDs
+    # Check if there are any rows
+    if len(df) == 0:
+        return False, "DataFrame is empty"
+    
+    # Check if fide_id is unique
     if df['fide_id'].duplicated().any():
-        return False, "DataFrame contains duplicate FIDE IDs"
+        return False, "FIDE IDs must be unique"
     
-    # Ensure FIDE IDs are strings
-    df['fide_id'] = df['fide_id'].astype(str)
-    
-    return True, "Validation successful"
+    return True, "DataFrame is valid"
 
 def process_pgn_data(
     pgn_list: List[str], 
@@ -55,44 +54,29 @@ def process_pgn_data(
     
     for pgn_str in pgn_list:
         try:
-            # Parse the PGN
-            pgn = io.StringIO(pgn_str)
-            game = chess.pgn.read_game(pgn)
+            # Parse PGN
+            pgn_io = io.StringIO(pgn_str)
+            game = chess.pgn.read_game(pgn_io)
             
             if game is None:
                 continue
             
             # Add or update headers
-            headers = game.headers
+            game.headers["FideId"] = fide_id
             
-            # Add source platform
-            headers["Source"] = platform
+            # Add custom headers for tracking
+            game.headers["ArchiverSource"] = platform
+            game.headers["ArchiverTimestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # Add FIDE ID for the player if we can determine which side they played
-            white_player = headers.get("White", "")
-            black_player = headers.get("Black", "")
-            
-            if platform == "chess.com":
-                # For Chess.com, try to match by name
-                if player_name in white_player:
-                    headers["WhiteFideId"] = fide_id
-                elif player_name in black_player:
-                    headers["BlackFideId"] = fide_id
-            elif platform == "lichess":
-                # For Lichess, usernames are usually exact
-                if player_name in white_player:
-                    headers["WhiteFideId"] = fide_id
-                elif player_name in black_player:
-                    headers["BlackFideId"] = fide_id
-            
-            # Convert back to PGN string
+            # Export game back to PGN
             exporter = chess.pgn.StringExporter()
             processed_pgn = game.accept(exporter)
-            processed_games.append(processed_pgn)
             
+            processed_games.append(processed_pgn)
         except Exception as e:
-            print(f"Error processing PGN game: {str(e)}")
-            continue
+            print(f"Error processing game: {str(e)}")
+            # Add the original game if there was an error
+            processed_games.append(pgn_str)
     
     return processed_games
 
@@ -106,32 +90,35 @@ def extract_game_metadata(pgn_str: str) -> Dict[str, Any]:
     Returns:
         Dictionary of game metadata
     """
+    metadata = {}
+    
     try:
-        pgn = io.StringIO(pgn_str)
-        game = chess.pgn.read_game(pgn)
+        # Parse PGN
+        pgn_io = io.StringIO(pgn_str)
+        game = chess.pgn.read_game(pgn_io)
         
         if game is None:
-            return {}
+            return metadata
         
-        # Extract basic metadata
-        headers = game.headers
+        # Extract headers
+        for key, value in game.headers.items():
+            metadata[key] = value
         
-        metadata = {
-            "event": headers.get("Event", ""),
-            "date": headers.get("Date", ""),
-            "white": headers.get("White", ""),
-            "black": headers.get("Black", ""),
-            "result": headers.get("Result", ""),
-            "white_elo": headers.get("WhiteElo", ""),
-            "black_elo": headers.get("BlackElo", ""),
-            "time_control": headers.get("TimeControl", ""),
-            "termination": headers.get("Termination", ""),
-            "source": headers.get("Source", ""),
-            "white_fide_id": headers.get("WhiteFideId", ""),
-            "black_fide_id": headers.get("BlackFideId", ""),
-        }
+        # Add additional metadata
+        metadata['moves_count'] = sum(1 for _ in game.mainline_moves())
         
-        return metadata
+        # Get the outcome
+        if "Result" in metadata:
+            result = metadata["Result"]
+            if result == "1-0":
+                metadata['outcome'] = "white_win"
+            elif result == "0-1":
+                metadata['outcome'] = "black_win"
+            elif result == "1/2-1/2":
+                metadata['outcome'] = "draw"
+            else:
+                metadata['outcome'] = "unknown"
     except Exception as e:
         print(f"Error extracting metadata: {str(e)}")
-        return {}
+    
+    return metadata

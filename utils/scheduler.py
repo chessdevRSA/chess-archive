@@ -7,6 +7,7 @@ from apscheduler.job import Job
 from utils.api_clients import ChessComClient, LichessClient
 from utils.data_processor import process_pgn_data
 from utils.file_manager import save_pgn_files
+from utils.db_manager import DatabaseManager
 
 def schedule_scraping_task(
     scheduler: BackgroundScheduler,
@@ -17,7 +18,8 @@ def schedule_scraping_task(
     platforms: List[str],
     day_of_month: int,
     hour: int,
-    max_games: int = 1000
+    time_controls: List[str] = None,
+    max_games: int = 0
 ) -> str:
     """
     Schedule a monthly game collection task for a player
@@ -31,11 +33,14 @@ def schedule_scraping_task(
         platforms: List of platforms to collect from
         day_of_month: Day of the month to run the collection
         hour: Hour of the day to run the collection
-        max_games: Maximum games to collect per platform
+        time_controls: List of time controls to collect (e.g., ["bullet", "blitz", "rapid"])
+        max_games: Maximum games to collect per platform (0 for unlimited)
         
     Returns:
         Job ID of the scheduled task
     """
+    db_manager = DatabaseManager()
+    
     def collection_task():
         # Collection function that runs on schedule
         print(f"Running scheduled collection for {player_name} ({fide_id})")
@@ -48,16 +53,45 @@ def schedule_scraping_task(
                 games = chess_com_client.get_player_games(
                     chesscom_username,
                     "Last month",
-                    max_games
+                    max_games,
+                    time_controls
                 )
                 
                 # Process and save games
+                is_active = len(games) > 0
+                processed_games = []
+                
                 if games:
                     processed_games = process_pgn_data(games, 'chess.com', player_name, fide_id)
-                    save_pgn_files(processed_games, 'chess.com', player_name, fide_id)
-                    print(f"Saved {len(processed_games)} Chess.com games for {player_name}")
+                
+                # Save games - pass active status to preserve files if inactive
+                save_pgn_files(processed_games, 'chess.com', player_name, fide_id, is_active)
+                
+                # Log the collection in the database
+                db_manager.log_collection(
+                    fide_id,
+                    'chess.com',
+                    "Last month",
+                    len(processed_games),
+                    time_controls,
+                    "success" if is_active else "inactive"
+                )
+                
+                print(f"Saved {len(processed_games)} Chess.com games for {player_name} (Active: {is_active})")
             except Exception as e:
-                print(f"Error collecting Chess.com games for {player_name}: {str(e)}")
+                error_msg = str(e)
+                print(f"Error collecting Chess.com games for {player_name}: {error_msg}")
+                
+                # Log error in database
+                db_manager.log_collection(
+                    fide_id,
+                    'chess.com',
+                    "Last month",
+                    0,
+                    time_controls,
+                    "error",
+                    error_msg
+                )
         
         # Lichess collection
         if "Lichess" in platforms and lichess_username and not pd.isna(lichess_username):
@@ -67,16 +101,45 @@ def schedule_scraping_task(
                 games = lichess_client.get_player_games(
                     lichess_username,
                     "Last month",
-                    max_games
+                    max_games,
+                    time_controls
                 )
                 
                 # Process and save games
+                is_active = len(games) > 0
+                processed_games = []
+                
                 if games:
                     processed_games = process_pgn_data(games, 'lichess', player_name, fide_id)
-                    save_pgn_files(processed_games, 'lichess', player_name, fide_id)
-                    print(f"Saved {len(processed_games)} Lichess games for {player_name}")
+                
+                # Save games - pass active status to preserve files if inactive
+                save_pgn_files(processed_games, 'lichess', player_name, fide_id, is_active)
+                
+                # Log the collection in the database
+                db_manager.log_collection(
+                    fide_id,
+                    'lichess',
+                    "Last month",
+                    len(processed_games),
+                    time_controls,
+                    "success" if is_active else "inactive"
+                )
+                
+                print(f"Saved {len(processed_games)} Lichess games for {player_name} (Active: {is_active})")
             except Exception as e:
-                print(f"Error collecting Lichess games for {player_name}: {str(e)}")
+                error_msg = str(e)
+                print(f"Error collecting Lichess games for {player_name}: {error_msg}")
+                
+                # Log error in database
+                db_manager.log_collection(
+                    fide_id,
+                    'lichess',
+                    "Last month",
+                    0,
+                    time_controls,
+                    "error",
+                    error_msg
+                )
     
     # Schedule the task to run monthly
     job = scheduler.add_job(
@@ -90,6 +153,17 @@ def schedule_scraping_task(
         misfire_grace_time=3600  # 1 hour grace time for misfires
     )
     
+    # Save scheduled task in database
+    db_manager.save_scheduled_task(
+        job.id,
+        fide_id,
+        platforms,
+        day_of_month,
+        hour,
+        time_controls,
+        max_games
+    )
+    
     return job.id
 
 def schedule_scraping_tasks(
@@ -99,7 +173,8 @@ def schedule_scraping_tasks(
     platforms: List[str],
     day_of_month: int,
     hour: int,
-    max_games: int = 1000
+    time_controls: List[str] = None,
+    max_games: int = 0
 ) -> List[str]:
     """
     Schedule monthly game collection tasks for multiple players
@@ -111,7 +186,8 @@ def schedule_scraping_tasks(
         platforms: List of platforms to collect from
         day_of_month: Day of the month to run the collection
         hour: Hour of the day to run the collection
-        max_games: Maximum games to collect per platform
+        time_controls: List of time controls to collect (e.g., ["bullet", "blitz", "rapid"])
+        max_games: Maximum games to collect per platform (0 for unlimited)
         
     Returns:
         List of job IDs for the scheduled tasks
@@ -141,6 +217,7 @@ def schedule_scraping_tasks(
             platforms,
             day_of_month,
             hour,
+            time_controls,
             max_games
         )
         

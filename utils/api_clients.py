@@ -9,6 +9,15 @@ from typing import List, Dict, Any, Optional, Union
 class ChessComClient:
     """Client for interacting with the Chess.com API"""
     
+    # Define standard time control categories for Chess.com
+    TIME_CONTROL_MAPPING = {
+        "bullet": ["bullet"],
+        "blitz": ["blitz"],
+        "rapid": ["rapid"],
+        "classical": ["daily", "standard"],
+        "other": ["chess960", "bughouse", "kingofthehill", "threecheck", "crazyhouse"]
+    }
+    
     def __init__(self, request_delay: float = 1.0):
         """
         Initialize the Chess.com API client
@@ -47,11 +56,101 @@ class ChessComClient:
             else:
                 raise Exception(f"Chess.com API error: {str(e)}")
     
+    def _is_matching_time_control(self, pgn: str, time_controls: List[str]) -> bool:
+        """
+        Check if a PGN game matches the requested time controls
+        
+        Args:
+            pgn: PGN string of the game
+            time_controls: List of time control categories to match
+            
+        Returns:
+            True if game matches one of the requested time controls, False otherwise
+        """
+        if not time_controls:
+            return True
+            
+        # Extract TimeControl tag from PGN
+        time_control_line = None
+        for line in pgn.split('\n'):
+            if '[TimeControl' in line:
+                time_control_line = line
+                break
+                
+        if not time_control_line:
+            return False
+            
+        # Extract Event tag to help identify the game type
+        event_line = None
+        for line in pgn.split('\n'):
+            if '[Event' in line:
+                event_line = line
+                break
+                
+        # Determine game type based on TimeControl and Event tags
+        game_type = None
+        
+        # Check event line for common time control identifiers
+        if event_line:
+            event_lower = event_line.lower()
+            if "bullet" in event_lower:
+                game_type = "bullet"
+            elif "blitz" in event_lower:
+                game_type = "blitz"
+            elif "rapid" in event_lower:
+                game_type = "rapid"
+            elif "classical" in event_lower or "standard" in event_lower:
+                game_type = "classical"
+            elif "daily" in event_lower:
+                game_type = "classical"
+                
+        # If we couldn't determine from Event, check TimeControl
+        if not game_type and time_control_line:
+            # Extract time value (format: [TimeControl "300"])
+            time_value = time_control_line.split('"')[1]
+            
+            try:
+                # Handle different TimeControl formats
+                if "+" in time_value:  # Format like "300+2"
+                    base_time = int(time_value.split('+')[0])
+                elif "/" in time_value:  # Format like "1/259200"
+                    # This is likely a daily game
+                    game_type = "classical"
+                else:
+                    base_time = int(time_value)
+                    
+                if not game_type:
+                    # Categorize based on base time
+                    if base_time < 180:  # Less than 3 minutes
+                        game_type = "bullet"
+                    elif base_time < 600:  # Less than 10 minutes
+                        game_type = "blitz"
+                    elif base_time < 1800:  # Less than 30 minutes
+                        game_type = "rapid"
+                    else:
+                        game_type = "classical"
+            except:
+                # If we can't parse the time control, default to None
+                pass
+                
+        # Check if determined game type matches requested time controls
+        if game_type:
+            for requested in time_controls:
+                if requested == game_type:
+                    return True
+                    
+                # Check in mapping table for alternative names
+                if requested in self.TIME_CONTROL_MAPPING and game_type in self.TIME_CONTROL_MAPPING[requested]:
+                    return True
+                    
+        return False
+    
     def get_player_games(
         self, 
         username: str, 
         time_period: str = "Last month", 
-        max_games: int = 100
+        max_games: int = 0,
+        time_controls: List[str] = None
     ) -> List[str]:
         """
         Get a player's games from Chess.com
@@ -60,6 +159,8 @@ class ChessComClient:
             username: Chess.com username
             time_period: Time period to fetch games for
             max_games: Maximum number of games to fetch (0 for unlimited)
+            time_controls: List of time controls to filter by (e.g., ["rapid", "blitz"])
+                           None or empty list means all time controls
             
         Returns:
             List of games in PGN format
@@ -93,10 +194,10 @@ class ChessComClient:
                     
                     for game in games:
                         if 'pgn' in game:
-                            all_games.append(game['pgn'])
-                            
-                        if max_games > 0 and len(all_games) >= max_games:
-                            return all_games
+                            pgn = game['pgn']
+                            # Apply time control filter
+                            if self._is_matching_time_control(pgn, time_controls):
+                                all_games.append(pgn)
                             
                     time.sleep(self.request_delay)
                 except Exception as e:
@@ -132,10 +233,10 @@ class ChessComClient:
                 for game in games:
                     # Filter games by date if needed
                     if 'pgn' in game:
-                        all_games.append(game['pgn'])
-                        
-                    if max_games > 0 and len(all_games) >= max_games:
-                        return all_games
+                        pgn = game['pgn']
+                        # Apply time control filter
+                        if self._is_matching_time_control(pgn, time_controls):
+                            all_games.append(pgn)
                         
                 time.sleep(self.request_delay)
             except Exception as e:
@@ -146,6 +247,16 @@ class ChessComClient:
 
 class LichessClient:
     """Client for interacting with the Lichess API"""
+    
+    # Define standard time control categories for Lichess
+    TIME_CONTROL_MAPPING = {
+        "bullet": ["bullet"],
+        "blitz": ["blitz"],
+        "rapid": ["rapid"],
+        "classical": ["classical"],
+        "correspondence": ["correspondence"],
+        "other": ["ultraBullet", "crazyhouse", "chess960", "kingOfTheHill", "threeCheck", "antichess", "atomic", "horde", "racingKings"]
+    }
     
     def __init__(self, request_delay: float = 1.0):
         """
@@ -189,7 +300,8 @@ class LichessClient:
         self, 
         username: str, 
         time_period: str = "Last month", 
-        max_games: int = 100
+        max_games: int = 0,
+        time_controls: List[str] = None
     ) -> List[str]:
         """
         Get a player's games from Lichess
@@ -198,6 +310,8 @@ class LichessClient:
             username: Lichess username
             time_period: Time period to fetch games for
             max_games: Maximum number of games to fetch (0 for unlimited)
+            time_controls: List of time controls to filter by (e.g., ["rapid", "blitz"])
+                           None or empty list means all time controls
             
         Returns:
             List of games in PGN format
@@ -228,6 +342,25 @@ class LichessClient:
             
         if max_games > 0:
             params["max"] = max_games
+            
+        # Add time control filters for Lichess
+        if time_controls:
+            # Lichess uses specific perf parameters for time controls
+            lichess_perfs = []
+            for tc in time_controls:
+                if tc == "bullet":
+                    lichess_perfs.append("bullet")
+                elif tc == "blitz":
+                    lichess_perfs.append("blitz")
+                elif tc == "rapid":
+                    lichess_perfs.append("rapid")
+                elif tc == "classical":
+                    lichess_perfs.append("classical")
+                elif tc == "correspondence":
+                    lichess_perfs.append("correspondence")
+                    
+            if lichess_perfs:
+                params["perfType"] = ",".join(lichess_perfs)
         
         try:
             response = self._make_request(f"games/user/{username}", params)

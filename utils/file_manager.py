@@ -64,7 +64,8 @@ def save_pgn_files(
     pgn_list: List[str], 
     platform: str, 
     player_name: str, 
-    fide_id: str
+    fide_id: str,
+    is_active: bool = True
 ) -> int:
     """
     Save PGN games to files organized by year and month
@@ -74,15 +75,21 @@ def save_pgn_files(
         platform: 'chess.com' or 'lichess'
         player_name: Name of the player
         fide_id: FIDE ID of the player
+        is_active: Whether the account is active
         
     Returns:
         Number of games saved
     """
-    if not pgn_list:
+    if not pgn_list and is_active:
+        # No games and account is active - nothing to save
         return 0
         
     platform_dir = get_player_directory(platform, player_name, fide_id)
     games_by_date = {}
+    
+    # If no games but account marked as inactive, we keep the existing files
+    if not pgn_list and not is_active:
+        return 0  # No new games saved
     
     # Organize games by date
     for pgn_str in pgn_list:
@@ -145,10 +152,9 @@ def save_pgn_files(
                 
             filename = os.path.join(year_dir, f"{year}-{month}.pgn")
             
-            # Check if file exists and append to it
-            mode = "a" if os.path.exists(filename) else "w"
-            
-            with open(filename, mode) as f:
+            # For active accounts, we replace the content
+            # For inactive accounts, we would skip this step
+            with open(filename, "w") as f:
                 for game in games:
                     f.write(game)
                     f.write("\n\n")
@@ -158,7 +164,7 @@ def save_pgn_files(
             print(f"Error saving games for {year_month}: {str(e)}")
             continue
     
-    # Update player_info.json with platform info
+    # Update player_info.json with platform info and active status
     player_info_path = os.path.join("data", "players", fide_id, "player_info.json")
     
     try:
@@ -171,11 +177,16 @@ def save_pgn_files(
         if platform not in player_info["platforms"]:
             player_info["platforms"][platform] = {
                 "last_update": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "total_games": total_saved
+                "total_games": total_saved,
+                "is_active": is_active
             }
         else:
             player_info["platforms"][platform]["last_update"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            player_info["platforms"][platform]["total_games"] = player_info["platforms"][platform].get("total_games", 0) + total_saved
+            player_info["platforms"][platform]["is_active"] = is_active
+            
+            # Only update total games if we have new games or the account is active
+            if is_active or total_saved > 0:
+                player_info["platforms"][platform]["total_games"] = player_info["platforms"][platform].get("total_games", 0) + total_saved
             
         with open(player_info_path, "w") as f:
             json.dump(player_info, f)
@@ -223,12 +234,22 @@ def get_archive_stats() -> Dict[str, Any]:
     games_by_platform = {"chess.com": 0, "lichess": 0}
     games_by_year = {}
     
+    # Keep track of active and inactive accounts
+    active_accounts = {"chess.com": 0, "lichess": 0}
+    inactive_accounts = {"chess.com": 0, "lichess": 0}
+    
     for player in players:
         platforms = player.get("platforms", {})
         
         for platform, platform_info in platforms.items():
             platform_games = platform_info.get("total_games", 0)
             total_games += platform_games
+            
+            # Count active/inactive accounts
+            if platform_info.get("is_active", True):
+                active_accounts[platform] = active_accounts.get(platform, 0) + 1
+            else:
+                inactive_accounts[platform] = inactive_accounts.get(platform, 0) + 1
             
             if platform in games_by_platform:
                 games_by_platform[platform] += platform_games
@@ -266,6 +287,8 @@ def get_archive_stats() -> Dict[str, Any]:
         "total_games": total_games,
         "games_by_platform": games_by_platform,
         "games_by_year": games_by_year,
+        "active_accounts": active_accounts,
+        "inactive_accounts": inactive_accounts,
         "players": players
     }
     
