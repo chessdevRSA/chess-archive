@@ -154,13 +154,15 @@ with tab2:
             platforms = st.multiselect(
                 "Platforms to collect from",
                 ["Chess.com", "Lichess"],
-                ["Chess.com", "Lichess"]
+                ["Chess.com", "Lichess"],
+                key="platforms_select"
             )
             
             selected_players = st.multiselect(
                 "Select players to collect games for",
                 st.session_state.player_data['name'].tolist(),
-                []
+                [],
+                key="players_select"
             )
             
             # Time controls section
@@ -180,16 +182,18 @@ with tab2:
                 global_time_controls = st.multiselect(
                     "Select time controls for all players",
                     ["bullet", "blitz", "rapid", "classical", "correspondence", "other"],
-                    []
+                    [],
+                    key="global_time_controls"
                 )
             elif time_control_mode == "Per Player":
                 st.info("Configure time controls for each selected player below:")
                 
-                for player in selected_players:
+                for i, player in enumerate(selected_players):
                     per_player_time_controls[player] = st.multiselect(
                         f"Time controls for {player}",
                         ["bullet", "blitz", "rapid", "classical", "correspondence", "other"],
-                        []
+                        [],
+                        key=f"player_time_controls_{i}"
                     )
             
         with col2:
@@ -391,20 +395,23 @@ with tab3:
             scheduled_players = st.multiselect(
                 "Select players for scheduled collection",
                 st.session_state.player_data['name'].tolist(),
-                []
+                [],
+                key="scheduled_players"
             )
             
             scheduled_platforms = st.multiselect(
                 "Platforms to collect from",
                 ["Chess.com", "Lichess"],
-                ["Chess.com", "Lichess"]
+                ["Chess.com", "Lichess"],
+                key="scheduled_platforms"
             )
             
             # Time controls for scheduled collections
             scheduled_time_controls = st.multiselect(
                 "Time controls to collect",
                 ["bullet", "blitz", "rapid", "classical", "correspondence", "other"],
-                []
+                [],
+                key="scheduled_time_controls"
             )
             
         with col2:

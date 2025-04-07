@@ -227,9 +227,9 @@ class DatabaseManager:
         platform: str, 
         time_period: str,
         games_count: int, 
-        time_controls: List[str] = None,
+        time_controls: Optional[List[str]] = None,
         status: str = "success", 
-        error_message: str = None
+        error_message: Optional[str] = None
     ) -> bool:
         """
         Log a game collection attempt
@@ -287,7 +287,7 @@ class DatabaseManager:
         platforms: List[str],
         day_of_month: int,
         hour: int,
-        time_controls: List[str] = None,
+        time_controls: Optional[List[str]] = None,
         max_games: int = 0
     ) -> bool:
         """

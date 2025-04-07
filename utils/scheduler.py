@@ -18,7 +18,7 @@ def schedule_scraping_task(
     platforms: List[str],
     day_of_month: int,
     hour: int,
-    time_controls: List[str] = None,
+    time_controls: Optional[List[str]] = None,
     max_games: int = 0
 ) -> str:
     """
@@ -173,7 +173,7 @@ def schedule_scraping_tasks(
     platforms: List[str],
     day_of_month: int,
     hour: int,
-    time_controls: List[str] = None,
+    time_controls: Optional[List[str]] = None,
     max_games: int = 0
 ) -> List[str]:
     """

@@ -56,7 +56,7 @@ class ChessComClient:
             else:
                 raise Exception(f"Chess.com API error: {str(e)}")
     
-    def _is_matching_time_control(self, pgn: str, time_controls: List[str]) -> bool:
+    def _is_matching_time_control(self, pgn: str, time_controls: Optional[List[str]]) -> bool:
         """
         Check if a PGN game matches the requested time controls
         
@@ -150,7 +150,7 @@ class ChessComClient:
         username: str, 
         time_period: str = "Last month", 
         max_games: int = 0,
-        time_controls: List[str] = None
+        time_controls: Optional[List[str]] = None
     ) -> List[str]:
         """
         Get a player's games from Chess.com
@@ -301,7 +301,7 @@ class LichessClient:
         username: str, 
         time_period: str = "Last month", 
         max_games: int = 0,
-        time_controls: List[str] = None
+        time_controls: Optional[List[str]] = None
     ) -> List[str]:
         """
         Get a player's games from Lichess
