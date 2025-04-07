@@ -11,4 +11,5 @@ dependencies = [
     "plotly>=6.0.1",
     "python-chess>=1.999",
     "streamlit>=1.44.1",
+    "trafilatura>=2.0.0",
 ]
