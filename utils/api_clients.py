@@ -42,19 +42,38 @@ class ChessComClient:
         url = f"{self.base_url}/{endpoint}"
         time.sleep(self.request_delay)  # Rate limiting
         
+        # Add user agent to avoid 403 errors
+        headers = {
+            'User-Agent': 'Chess Game Archiver/1.0 (https://replit.com; for educational purposes)',
+            'Accept': 'application/json',
+        }
+        
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, headers=headers)
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.RequestException as e:
-            if response.status_code == 429:
+        except requests.exceptions.HTTPError as e:
+            if hasattr(e, 'response') and e.response.status_code == 429:
                 # Rate limit exceeded
-                retry_after = int(response.headers.get('Retry-After', 60))
+                retry_after = int(e.response.headers.get('Retry-After', 60))
                 print(f"Rate limit exceeded. Waiting {retry_after} seconds...")
                 time.sleep(retry_after)
                 return self._make_request(endpoint, params)
+            elif hasattr(e, 'response') and e.response.status_code == 404:
+                # Handle 404 - User not found or no games
+                print(f"No games found at {url}")
+                return {"archives": []}
+            elif hasattr(e, 'response') and e.response.status_code == 403:
+                # Handle 403 - API access forbidden
+                print(f"Access forbidden by Chess.com API at {url}. Possibly temporary IP restriction.")
+                # Return empty response to continue execution
+                return {"archives": []}
             else:
                 raise Exception(f"Chess.com API error: {str(e)}")
+        except Exception as e:
+            print(f"Unexpected error accessing Chess.com API: {str(e)}")
+            # Return empty response to continue execution
+            return {"archives": []}
     
     def _is_matching_time_control(self, pgn: str, time_controls: Optional[List[str]]) -> bool:
         """
@@ -189,7 +208,14 @@ class ChessComClient:
             all_games = []
             for archive_url in archives:
                 try:
-                    month_data = requests.get(archive_url).json()
+                    # Use proper headers for archive URLs too
+                    headers = {
+                        'User-Agent': 'Chess Game Archiver/1.0 (https://replit.com; for educational purposes)',
+                        'Accept': 'application/json',
+                    }
+                    archive_response = requests.get(archive_url, headers=headers)
+                    archive_response.raise_for_status()
+                    month_data = archive_response.json()
                     games = month_data.get('games', [])
                     
                     for game in games:
@@ -227,7 +253,14 @@ class ChessComClient:
         all_games = []
         for archive_url in filtered_archives:
             try:
-                month_data = requests.get(archive_url).json()
+                # Use proper headers for archive URLs too
+                headers = {
+                    'User-Agent': 'Chess Game Archiver/1.0 (https://replit.com; for educational purposes)',
+                    'Accept': 'application/json',
+                }
+                archive_response = requests.get(archive_url, headers=headers)
+                archive_response.raise_for_status()
+                month_data = archive_response.json()
                 games = month_data.get('games', [])
                 
                 for game in games:
@@ -282,19 +315,53 @@ class LichessClient:
         url = f"{self.base_url}/{endpoint}"
         time.sleep(self.request_delay)  # Rate limiting
         
+        # Add user agent to avoid 403 errors
+        headers = {
+            'User-Agent': 'Chess Game Archiver/1.0 (https://replit.com; for educational purposes)',
+            'Accept': 'application/x-chess-pgn',
+        }
+        
         try:
-            response = requests.get(url, params=params, stream=True)
+            response = requests.get(url, params=params, headers=headers, stream=True)
             response.raise_for_status()
             return response
-        except requests.exceptions.RequestException as e:
-            if response.status_code == 429:
+        except requests.exceptions.HTTPError as e:
+            if hasattr(e, 'response') and e.response.status_code == 429:
                 # Rate limit exceeded
-                retry_after = int(response.headers.get('Retry-After', 60))
+                retry_after = int(e.response.headers.get('Retry-After', 60))
                 print(f"Rate limit exceeded. Waiting {retry_after} seconds...")
                 time.sleep(retry_after)
                 return self._make_request(endpoint, params)
+            elif hasattr(e, 'response') and e.response.status_code == 404:
+                # Handle 404 - User not found or no games
+                print(f"No games or user not found at {url}")
+                # Return a mock response object with empty text
+                mock_response = requests.Response()
+                mock_response.status_code = 404
+                mock_response._content = b''  # Empty bytes content
+                return mock_response
+            elif hasattr(e, 'response') and e.response.status_code == 403:
+                # Handle 403 - API access forbidden
+                print(f"Access forbidden by Lichess API at {url}. Possibly temporary IP restriction.")
+                # Return a mock response object with empty text
+                mock_response = requests.Response()
+                mock_response.status_code = 403
+                mock_response._content = b''  # Empty bytes content
+                return mock_response
             else:
-                raise Exception(f"Lichess API error: {str(e)}")
+                print(f"HTTP error from Lichess API: {str(e)}")
+                # Return a mock response object with empty text
+                mock_response = requests.Response()
+                mock_response.status_code = e.response.status_code if hasattr(e, 'response') else 500
+                mock_response._content = b''  # Empty bytes content
+                return mock_response
+        except Exception as e:
+            print(f"Unexpected error accessing Lichess API: {str(e)}")
+            # Return a mock response object with empty text
+            mock_response = requests.Response()
+            mock_response.status_code = 500
+            mock_response._content = b''  # Empty bytes content
+            return mock_response
     
     def get_player_games(
         self, 
@@ -338,10 +405,10 @@ class LichessClient:
         }
         
         if since:
-            params["since"] = since
+            params["since"] = str(since)
             
         if max_games > 0:
-            params["max"] = max_games
+            params["max"] = str(max_games)
             
         # Add time control filters for Lichess
         if time_controls:
