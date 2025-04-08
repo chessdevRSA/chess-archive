@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chess.com Game Downloader</title>
+    <script>
+        async function getUserInfo(username) {
+            try {
+                const response = await fetch(`https://api.chess.com/pub/player/${username}`);
+                if (!response.ok) throw new Error("User not found");
+                return await response.json();
+            } catch (error) {
+                console.error("Error fetching user info:", error);
+                return null;
+            }
+        }
+
+        async function fetchGamesForMonth(username, year, month, ratedOnly, timeControls) {
+            try {
+                const url = `https://api.chess.com/pub/player/${username}/games/${year}/${month.toString().padStart(2, '0')}`;
+                const response = await fetch(url);
+                if (!response.ok) return "";
+                
+                const data = await response.json();
+                if (!data.games) return "";
+                
+                return data.games
+                    .filter(game => {
+                        if (game.pgn.includes("Variant")) return false;
+                        if (ratedOnly && !game.rated) return false;
+                        
+                        let timeControl = game.time_control;
+                        let baseTime = Number(timeControl.split("+")[0]);
+                        let category = baseTime < 180 ? "bullet" : baseTime < 600 ? "blitz" : baseTime < 3600 ? "rapid" : "daily";
+                        
+                        return timeControls.has(category);
+                    })
+                    .map(game => game.pgn + "\n\n")
+                    .join("");
+            } catch (error) {
+                console.error("Error fetching games for", year, month, error);
+                return "";
+            }
+        }
+
+        async function downloadGames() {
+            const params = new URLSearchParams(window.location.search);
+            const username = document.getElementById("username").value.trim();
+            const minDate = document.getElementById("minDate").value;
+            const maxDate = document.getElementById("maxDate").value;
+            const ratedOnly = document.getElementById("rated").checked;
+            
+            const timeControls = new Set();
+            document.querySelectorAll("input[name='timeControl']:checked").forEach(cb => timeControls.add(cb.value));
+            
+            if (!username) {
+                alert("Please enter a Chess.com username.");
+                return;
+            }
+
+            const userInfo = await getUserInfo(username);
+            if (!userInfo) {
+                alert("User not found or error fetching user info.");
+                return;
+            }
+            
+            const creationDate = userInfo.joined * 1000;
+            const lastOnline = userInfo.last_online * 1000;
+            const startYear = minDate ? new Date(minDate).getFullYear() : new Date(creationDate).getFullYear();
+            const startMonth = minDate ? new Date(minDate).getMonth() + 1 : new Date(creationDate).getMonth() + 1;
+            const endYear = maxDate ? new Date(maxDate).getFullYear() : new Date(lastOnline).getFullYear();
+            const endMonth = maxDate ? new Date(maxDate).getMonth() + 1 : new Date(lastOnline).getMonth() + 1;
+            
+            let pgnData = "";
+            
+            const promises = [];
+            for (let year = startYear; year <= endYear; year++) {
+                for (let month = 1; month <= 12; month++) {
+                    if ((year === endYear && month > endMonth) || (year === startYear && month < startMonth)) continue;
+                    promises.push(fetchGamesForMonth(username, year, month, ratedOnly, timeControls));
+                }
+            }
+            
+            const results = await Promise.allSettled(promises);
+            pgnData = results.filter(result => result.status === "fulfilled").map(result => result.value).join("");
+            
+            if (!pgnData) {
+                alert("No games found for the given criteria.");
+                return;
+            }
+            
+            const blob = new Blob([pgnData], { type: "text/plain" });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `${username}_games.pgn`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+
+        function updateAutoDownloadLink() {
+            const username = document.getElementById("username").value.trim();
+            const minDate = document.getElementById("minDate").value;
+            const maxDate = document.getElementById("maxDate").value;
+            const ratedOnly = document.getElementById("rated").checked;
+            const timeControls = Array.from(document.querySelectorAll("input[name='timeControl']:checked"), cb => cb.value).join(",");
+            
+            const url = new URL(window.location.href);
+            url.searchParams.set("username", username);
+            if (minDate) url.searchParams.set("minDate", minDate);
+            if (maxDate) url.searchParams.set("maxDate", maxDate);
+            if (ratedOnly) url.searchParams.set("rated", "true");
+            if (timeControls) url.searchParams.set("timeControls", timeControls);
+            url.searchParams.set("download", "true");
+            
+            document.getElementById("autoDownloadLink").href = url;
+            document.getElementById("autoDownloadLink").textContent = url;
+        }
+        
+        window.onload = function() {
+    const params = new URLSearchParams(window.location.search);
+    
+    // Fill form fields from URL parameters
+    if (params.has("username")) document.getElementById("username").value = params.get("username");
+    if (params.has("minDate")) document.getElementById("minDate").value = params.get("minDate");
+    if (params.has("maxDate")) document.getElementById("maxDate").value = params.get("maxDate");
+    if (params.has("rated")) document.getElementById("rated").checked = (params.get("rated") === "true");
+
+    if (params.has("timeControls")) {
+        const selectedControls = params.get("timeControls").split(",");
+        document.querySelectorAll("input[name='timeControl']").forEach(cb => {
+            cb.checked = selectedControls.includes(cb.value);
+        });
+    }
+
+    // Update the auto-download link
+    updateAutoDownloadLink();
+
+    // If download=true, wait a moment to ensure fields are set, then start download
+    if (params.get("download") === "true" && params.has("username")) {
+        setTimeout(downloadGames, 500); // Ensures all fields are properly set
+    }
+
+    // Attach event listeners to update URL when fields change
+    document.querySelectorAll("input, select").forEach(el => el.addEventListener("input", updateAutoDownloadLink));
+};
+    </script>
+</head>
+<body style="font-family: Arial, sans-serif; max-width: 400px; margin: 50px auto; text-align: center;">
+    <h2>Chess.com Game Downloader</h2>
+    
+    <label>Username:</label>
+    <input type="text" id="username" required><br><br>
+
+    <label>Time Controls:</label><br>
+    <input type="checkbox" name="timeControl" value="bullet"> Bullet
+    <input type="checkbox" name="timeControl" value="blitz"> Blitz
+    <input type="checkbox" name="timeControl" value="rapid"> Rapid
+    <input type="checkbox" name="timeControl" value="daily"> Daily<br><br>
+
+    <label>Min Date:</label>
+    <input type="date" id="minDate"><br><br>
+    
+    <label>Max Date:</label>
+    <input type="date" id="maxDate"><br><br>
+
+    <label>Only Rated Games:</label>
+    <input type="checkbox" id="rated"><br><br>
+
+    <button onclick="downloadGames()">Download PGN</button><br><br>
+
+    <p>Auto-download URL: <a id="autoDownloadLink" href="#"></a></p>
+</body>
+</html>
